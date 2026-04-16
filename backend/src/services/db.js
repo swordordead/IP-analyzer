@@ -116,10 +116,20 @@ async function initDB() {
 
   if (host && password && password !== '请填写本地数据库密码') {
     try {
+      const dbName = process.env.MYSQL_DATABASE || 'ip_analyzer'
+      const port = parseInt(process.env.MYSQL_PORT || '3306')
+
+      // 先不带 database 连接，自动建库
+      const tempPool = mysql.createPool({ host, port, user: username, password, waitForConnections: true, connectionLimit: 2, timezone: '+08:00', connectTimeout: 5000 })
+      const tempConn = await tempPool.getConnection()
+      await tempConn.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)
+      tempConn.release()
+      await tempPool.end()
+
       pool = mysql.createPool({
         host,
-        port: parseInt(process.env.MYSQL_PORT || '3306'),
-        database: process.env.MYSQL_DATABASE || 'ip_analyzer',
+        port,
+        database: dbName,
         user: username,
         password,
         waitForConnections: true,

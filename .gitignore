@@ -4,3 +4,9 @@ uploads/
 data/
 *.sqlite
 dist/
+.claude/
+.playwright-mcp/
+test_images/
+*.docx
+*.py
+package-lock.json
