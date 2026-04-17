@@ -123,8 +123,16 @@ function extractJSON(text) {
   return JSON.parse(match[0])
 }
 
-// 构建带图片的消息内容
-function buildUserContent(text, imagePath) {
+// 构建带图片的消息内容（支持磁盘路径或 buffer）
+function buildUserContent(text, imagePath, imageBuffer, imageMimeType) {
+  // 优先用 buffer
+  if (imageBuffer) {
+    const base64 = Buffer.isBuffer(imageBuffer) ? imageBuffer.toString('base64') : Buffer.from(imageBuffer).toString('base64')
+    return [
+      { type: 'text', text },
+      { type: 'image_url', image_url: { url: `data:${imageMimeType || 'image/jpeg'};base64,${base64}` } }
+    ]
+  }
   if (!imagePath || !fs.existsSync(imagePath)) {
     return text
   }
@@ -142,11 +150,10 @@ function buildUserContent(text, imagePath) {
 async function analyzeProduct({ imagePath, description, ipProfile }) {
   let knowledgeContext = ''
   let hasFontRef = false
-  const refPaths = ipProfile
-    ? (ipProfile.refImagePaths || []).filter(p => fs.existsSync(p)).slice(0, 5)
-    : []
+  // refImages: [{ buffer, mediaType }] 从数据库读取的参考图
+  const refImages = ipProfile ? (ipProfile.refImages || []).slice(0, 5) : []
   if (ipProfile) {
-    hasFontRef = !!(ipProfile.font_ref_image_path && fs.existsSync(ipProfile.font_ref_image_path))
+    hasFontRef = !!(ipProfile.fontRefImage && ipProfile.fontRefImage.buffer)
     knowledgeContext = `
 【知识库信息 - ${ipProfile.name}】
 版权方：${ipProfile.owner}
@@ -155,7 +162,7 @@ ${ipProfile.elements.map(e => `- ${e.element_name}（${e.element_type}）：${e.
 已录入组合风险：
 ${ipProfile.combos.map(c => `- ${c.rule_type}：${c.description || ''}`).join('\n')}
 ${hasFontRef ? '注意：该IP已上传原创字体参考图，第⑦维度请做图图比对，输出字体视觉相似度说明。' : ''}
-${refPaths.length > 0 ? `注意：已提供 ${refPaths.length} 张IP参考图，请优先结合参考图做整体视觉近似度判断。` : ''}
+${refImages.length > 0 ? `注意：已提供 ${refImages.length} 张IP参考图，请优先结合参考图做整体视觉近似度判断。` : ''}
 `
   }
 
@@ -176,20 +183,17 @@ ${OUTPUT_FORMAT}`
 
   const extraParts = []
   if (hasFontRef) {
-    const fontData = fs.readFileSync(ipProfile.font_ref_image_path)
-    const fontBase64 = fontData.toString('base64')
-    const fontExt = ipProfile.font_ref_image_path.split('.').pop().toLowerCase()
-    const fontMime = fontExt === 'png' ? 'image/png' : fontExt === 'webp' ? 'image/webp' : 'image/jpeg'
+    const fontBuf = ipProfile.fontRefImage.buffer
+    const fontBase64 = Buffer.isBuffer(fontBuf) ? fontBuf.toString('base64') : Buffer.from(fontBuf).toString('base64')
+    const fontMime = ipProfile.fontRefImage.mediaType || 'image/jpeg'
     extraParts.push({ type: 'text', text: '以下是该IP的原创字体参考图，请用于第⑦维度文字排版的图图比对：' })
     extraParts.push({ type: 'image_url', image_url: { url: `data:${fontMime};base64,${fontBase64}` } })
   }
-  if (refPaths.length > 0) {
-    extraParts.push({ type: 'text', text: `以下是该IP的 ${refPaths.length} 张参考图，请结合做7维视觉比对：` })
-    for (const rp of refPaths) {
-      const data = fs.readFileSync(rp).toString('base64')
-      const ext = rp.split('.').pop().toLowerCase()
-      const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
-      extraParts.push({ type: 'image_url', image_url: { url: `data:${mime};base64,${data}` } })
+  if (refImages.length > 0) {
+    extraParts.push({ type: 'text', text: `以下是该IP的 ${refImages.length} 张参考图，请结合做7维视觉比对：` })
+    for (const img of refImages) {
+      const base64 = Buffer.isBuffer(img.buffer) ? img.buffer.toString('base64') : Buffer.from(img.buffer).toString('base64')
+      extraParts.push({ type: 'image_url', image_url: { url: `data:${img.mediaType || 'image/jpeg'};base64,${base64}` } })
     }
   }
 

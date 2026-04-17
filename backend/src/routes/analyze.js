@@ -83,12 +83,13 @@ router.post('/', upload.single('image'), async (req, res) => {
             const [elements] = await db.query('SELECT * FROM ip_elements WHERE ip_id = ?', [profile.id])
             const [combos] = await db.query('SELECT * FROM ip_combos WHERE ip_id = ?', [profile.id])
             const [refImgs] = await db.query(
-              'SELECT file_path FROM ip_images WHERE ip_id=? ORDER BY sort_order LIMIT 5',
+              'SELECT image_data, media_type FROM ip_images WHERE ip_id=? AND image_data IS NOT NULL ORDER BY sort_order LIMIT 5',
               [profile.id]
             )
             ipProfile = {
               ...profile, elements, combos,
-              refImagePaths: refImgs.map(r => path.join(__dirname, '../../', r.file_path))
+              refImages: refImgs.map(r => ({ buffer: r.image_data, mediaType: r.media_type || 'image/jpeg' })),
+              fontRefImage: profile.font_ref_image_data ? { buffer: profile.font_ref_image_data, mediaType: profile.font_ref_media_type || 'image/jpeg' } : null
             }
           }
         }
@@ -114,12 +115,13 @@ router.post('/', upload.single('image'), async (req, res) => {
               const [elements] = await db.query('SELECT * FROM ip_elements WHERE ip_id = ?', [profile.id])
               const [combos] = await db.query('SELECT * FROM ip_combos WHERE ip_id = ?', [profile.id])
               const [refImgs] = await db.query(
-                'SELECT file_path FROM ip_images WHERE ip_id=? ORDER BY sort_order LIMIT 5',
+                'SELECT image_data, media_type FROM ip_images WHERE ip_id=? AND image_data IS NOT NULL ORDER BY sort_order LIMIT 5',
                 [profile.id]
               )
               ipProfile = {
                 ...profile, elements, combos,
-                refImagePaths: refImgs.map(r => path.join(__dirname, '../../', r.file_path))
+                refImages: refImgs.map(r => ({ buffer: r.image_data, mediaType: r.media_type || 'image/jpeg' })),
+                fontRefImage: profile.font_ref_image_data ? { buffer: profile.font_ref_image_data, mediaType: profile.font_ref_media_type || 'image/jpeg' } : null
               }
             }
           }

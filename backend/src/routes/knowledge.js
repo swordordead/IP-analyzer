@@ -9,37 +9,44 @@ const { parseDocument, generateEmbedding, buildEmbeddingText } = require('../ser
 
 const router = express.Router()
 
-const storage = multer.diskStorage({
+// 文档上传仍用磁盘（mammoth 需要文件路径）
+const docStorage = multer.diskStorage({
   destination: path.join(__dirname, '../../uploads'),
   filename: (req, file, cb) => {
     cb(null, `doc_${Date.now()}_${file.originalname}`)
   }
 })
-const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } })
+const docUpload = multer({ storage: docStorage, limits: { fileSize: 100 * 1024 * 1024 } })
 
-// 从 .docx 中提取图片，保存到 uploads/ip_imgs/<hash>/，返回 URL 路径数组
+// 图片上传用内存（直接存 DB）
+const memUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } })
+
+// 临时存储：parse 到 save 之间暂存图片 buffer
+const tempImageStore = new Map()
+const TEMP_TTL = 30 * 60 * 1000
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, val] of tempImageStore) {
+    if (now - val.createdAt > TEMP_TTL) tempImageStore.delete(key)
+  }
+}, 5 * 60 * 1000)
+
+// 从 .docx 中提取图片，返回 buffer 数组（不写磁盘）
 async function extractDocImages(docFilePath) {
-  const docHash = crypto.randomBytes(4).toString('hex')
-  const imgDir = path.join(__dirname, '../../uploads/ip_imgs', docHash)
-  fs.mkdirSync(imgDir, { recursive: true })
-
-  const savedImages = []
+  const imageBuffers = []
   let idx = 0
 
   const options = {
     convertImage: mammoth.images.imgElement(async (image) => {
       idx++
-      const ext = (image.contentType.split('/')[1] || 'jpg').replace('jpeg', 'jpg')
-      const filename = `${idx}.${ext}`
       try {
         const buf = await image.readAsBuffer()
-        fs.writeFileSync(path.join(imgDir, filename), buf)
-        // 统一存相对 URL 路径，前端用 API_BASE + file_path 拼接
-        savedImages.push(`/uploads/ip_imgs/${docHash}/${filename}`)
+        const mediaType = image.contentType || 'image/jpeg'
+        imageBuffers.push({ buffer: buf, mediaType })
       } catch(e) {
         console.warn(`[DocImage] 第${idx}张图片提取失败:`, e.message)
       }
-      return { src: '' } // mammoth 需要返回值，我们不用 HTML 输出
+      return { src: '' }
     })
   }
 
@@ -49,22 +56,16 @@ async function extractDocImages(docFilePath) {
     console.warn('[DocImage] convertToHtml 失败:', e.message)
   }
 
-  // 文本仍用 extractRawText（稳定，不依赖 HTML 解析）
   const { value: text } = await mammoth.extractRawText({ path: docFilePath })
-
-  // 若图片目录为空（文档无图片），清理空目录
-  if (savedImages.length === 0) {
-    try { fs.rmdirSync(imgDir) } catch(e) {}
-  }
-
-  return { text, images: savedImages }
+  return { text, images: imageBuffers }
 }
 
 // GET /api/knowledge/list
 router.get('/list', async (req, res) => {
   try {
     const [profiles] = await db.query(
-      `SELECT p.*,
+      `SELECT p.id, p.name, p.owner, p.icon, p.font_ref_image_path, p.created_at, p.updated_at,
+        (p.font_ref_image_data IS NOT NULL) as hasFontImage,
         COUNT(DISTINCT e.id) as element_count,
         COUNT(DISTINCT c.id) as combo_count,
         COUNT(DISTINCT img.id) as image_count
@@ -82,7 +83,7 @@ router.get('/list', async (req, res) => {
 
 // POST /api/knowledge/parse - 上传并解析 Word 文档（预览，不入库）
 router.post('/parse', (req, res, next) => {
-  upload.single('file')(req, res, (err) => {
+  docUpload.single('file')(req, res, (err) => {
     if (err && err.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({ error: '文件过大，最大支持 100MB' })
     }
@@ -97,7 +98,7 @@ router.post('/parse', (req, res, next) => {
     try {
       const result = await extractDocImages(req.file.path)
       text = result.text
-      images = result.images
+      images = result.images // buffer 数组
     } catch (e) {
       return res.status(400).json({ error: '文档读取失败，请确认文件是否为有效的 .docx 格式（不能是 .doc 或改后缀的文件）' })
     }
@@ -108,10 +109,19 @@ router.post('/parse', (req, res, next) => {
 
     console.log(`[Parse] 文档字符数: ${text.length}，提取图片: ${images.length} 张，开始 AI 解析...`)
     const parsed = await parseDocument(text)
-    parsed.docPath = req.file.path
-    parsed.tempImages = images // URL 路径数组，save 时传回
+
+    // 图片 buffer 暂存内存，生成 token 给前端回传
+    const tempToken = crypto.randomBytes(8).toString('hex')
+    if (images.length > 0) {
+      tempImageStore.set(tempToken, { images, createdAt: Date.now() })
+    }
+    parsed.tempToken = tempToken
+    parsed.imageCount = images.length
 
     res.json({ success: true, data: parsed })
+
+    // 清理临时文档文件
+    try { fs.unlinkSync(req.file.path) } catch(e) {}
   } catch (err) {
     console.error('Parse error:', err)
     res.status(500).json({ error: err.message || '解析失败' })
@@ -122,7 +132,7 @@ router.post('/parse', (req, res, next) => {
 router.post('/save', async (req, res) => {
   const conn = await db.getConnection()
   try {
-    const { ipName, owner, icon, elements, combos, tempImages } = req.body
+    const { ipName, owner, icon, elements, combos, tempToken } = req.body
     if (!ipName) return res.status(400).json({ error: '缺少IP名称' })
 
     await conn.beginTransaction()
@@ -167,15 +177,18 @@ router.post('/save', async (req, res) => {
       }
     }
 
-    // 保存从文档提取的参考图
-    if (tempImages && tempImages.length > 0) {
-      for (let i = 0; i < tempImages.length; i++) {
+    // 从 tempImageStore 取出图片 buffer 写入数据库
+    const stored = tempToken ? tempImageStore.get(tempToken) : null
+    if (stored && stored.images.length > 0) {
+      for (let i = 0; i < stored.images.length; i++) {
+        const img = stored.images[i]
         await conn.query(
-          'INSERT INTO ip_images (ip_id, file_path, sort_order) VALUES (?, ?, ?)',
-          [ipId, tempImages[i], i]
+          'INSERT INTO ip_images (ip_id, image_data, media_type, sort_order) VALUES (?, ?, ?, ?)',
+          [ipId, img.buffer, img.mediaType, i]
         )
       }
-      console.log(`[Save] ${ipName} 保存了 ${tempImages.length} 张参考图`)
+      console.log(`[Save] ${ipName} 保存了 ${stored.images.length} 张参考图到数据库`)
+      tempImageStore.delete(tempToken)
     }
 
     await conn.commit()
@@ -200,6 +213,19 @@ router.post('/save', async (req, res) => {
   }
 })
 
+// GET /api/knowledge/image/:imageId - 从数据库返回图片二进制
+router.get('/image/:imageId', async (req, res) => {
+  try {
+    const [rows] = await db.query('SELECT image_data, media_type FROM ip_images WHERE id=?', [req.params.imageId])
+    if (!rows.length || !rows[0].image_data) return res.status(404).json({ error: '图片不存在' })
+    res.set('Content-Type', rows[0].media_type || 'image/jpeg')
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.end(Buffer.isBuffer(rows[0].image_data) ? rows[0].image_data : Buffer.from(rows[0].image_data))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // DELETE /api/knowledge/:id
 router.delete('/:id', async (req, res) => {
   try {
@@ -216,24 +242,47 @@ router.get('/:id', async (req, res) => {
     const [rows] = await db.query('SELECT * FROM ip_profiles WHERE id=?', [req.params.id])
     if (!rows.length) return res.status(404).json({ error: 'IP不存在' })
     const profile = rows[0]
+    // 不返回 BLOB 字段给前端
+    delete profile.font_ref_image_data
+    delete profile.embeddings
+    const hasFontImage = !!(rows[0].font_ref_image_data)
     const [elements] = await db.query('SELECT * FROM ip_elements WHERE ip_id = ?', [profile.id])
     const [combos] = await db.query('SELECT * FROM ip_combos WHERE ip_id = ?', [profile.id])
     const [images] = await db.query(
-      'SELECT file_path, sort_order FROM ip_images WHERE ip_id = ? ORDER BY sort_order ASC',
+      'SELECT id, sort_order FROM ip_images WHERE ip_id = ? AND image_data IS NOT NULL ORDER BY sort_order ASC',
       [profile.id]
     )
-    res.json({ success: true, data: { ...profile, elements, combos, images } })
+    res.json({ success: true, data: { ...profile, hasFontImage, elements, combos, images } })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// POST /api/knowledge/:id/font-image - 上传字体参考图
-router.post('/:id/font-image', upload.single('image'), async (req, res) => {
+// POST /api/knowledge/:id/font-image - 上传字体参考图（存入数据库）
+router.post('/:id/font-image', memUpload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: '请上传图片' })
-    await db.query('UPDATE ip_profiles SET font_ref_image_path=? WHERE id=?', [req.file.path, req.params.id])
+    await db.query(
+      'UPDATE ip_profiles SET font_ref_image_data=?, font_ref_media_type=? WHERE id=?',
+      [req.file.buffer, req.file.mimetype, req.params.id]
+    )
     res.json({ success: true, message: '字体参考图已上传' })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/knowledge/:id/font-image-data - 返回字体参考图二进制
+router.get('/:id/font-image-data', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT font_ref_image_data, font_ref_media_type FROM ip_profiles WHERE id=?',
+      [req.params.id]
+    )
+    if (!rows.length || !rows[0].font_ref_image_data) return res.status(404).json({ error: '无字体参考图' })
+    res.set('Content-Type', rows[0].font_ref_media_type || 'image/jpeg')
+    res.set('Cache-Control', 'public, max-age=86400')
+    res.end(Buffer.isBuffer(rows[0].font_ref_image_data) ? rows[0].font_ref_image_data : Buffer.from(rows[0].font_ref_image_data))
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

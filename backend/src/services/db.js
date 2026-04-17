@@ -101,11 +101,17 @@ function createSQLiteTables() {
     CREATE TABLE IF NOT EXISTS ip_images (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ip_id INTEGER NOT NULL,
-      file_path TEXT NOT NULL,
+      file_path TEXT,
+      image_data BLOB,
+      media_type TEXT DEFAULT 'image/jpeg',
       sort_order INTEGER DEFAULT 0,
       FOREIGN KEY (ip_id) REFERENCES ip_profiles(id) ON DELETE CASCADE
     )
   `)
+  try { sqliteDb.run('ALTER TABLE ip_images ADD COLUMN image_data BLOB') } catch(e) {}
+  try { sqliteDb.run('ALTER TABLE ip_images ADD COLUMN media_type TEXT DEFAULT \'image/jpeg\'') } catch(e) {}
+  try { sqliteDb.run('ALTER TABLE ip_profiles ADD COLUMN font_ref_image_data BLOB') } catch(e) {}
+  try { sqliteDb.run('ALTER TABLE ip_profiles ADD COLUMN font_ref_media_type TEXT') } catch(e) {}
 }
 
 async function initDB() {
@@ -187,11 +193,17 @@ async function initDB() {
           CREATE TABLE IF NOT EXISTS ip_images (
             id INT AUTO_INCREMENT PRIMARY KEY,
             ip_id INT NOT NULL,
-            file_path VARCHAR(500) NOT NULL,
+            file_path VARCHAR(500),
+            image_data LONGBLOB,
+            media_type VARCHAR(50) DEFAULT 'image/jpeg',
             sort_order INT DEFAULT 0,
             FOREIGN KEY (ip_id) REFERENCES ip_profiles(id) ON DELETE CASCADE
           ) CHARACTER SET utf8mb4
         `)
+        try { await conn.query('ALTER TABLE ip_images ADD COLUMN image_data LONGBLOB') } catch(e) {}
+        try { await conn.query('ALTER TABLE ip_images ADD COLUMN media_type VARCHAR(50) DEFAULT \'image/jpeg\'') } catch(e) {}
+        try { await conn.query('ALTER TABLE ip_profiles ADD COLUMN font_ref_image_data LONGBLOB') } catch(e) {}
+        try { await conn.query('ALTER TABLE ip_profiles ADD COLUMN font_ref_media_type VARCHAR(50)') } catch(e) {}
         useMySQL = true
         console.log('[DB] MySQL 连接成功，数据库初始化完成')
       } finally {

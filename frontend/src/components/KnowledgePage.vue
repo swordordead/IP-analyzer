@@ -317,7 +317,7 @@ function formatDate(dt) {
             <span v-if="ip.combo_count > 0" style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;background:var(--warn-soft);color:var(--warn);">
               {{ ip.combo_count }} 条组合规则
             </span>
-            <span v-if="ip.font_ref_image_path" style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;background:rgba(47,122,84,0.1);color:#2f7a54;">
+            <span v-if="ip.font_ref_image_data || ip.hasFontImage" style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;background:rgba(47,122,84,0.1);color:#2f7a54;">
               有字体图
             </span>
             <span v-if="ip.image_count > 0" style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;background:rgba(14,115,200,0.1);color:#0e73c8;">
@@ -333,7 +333,7 @@ function formatDate(dt) {
 
             <label :style="{padding:'3px 10px',borderRadius:'6px',border:'1px solid var(--line)',background:'var(--panel-strong)',color:'var(--muted)',fontSize:'11px',cursor:'pointer',opacity: cardFontUploadingId === ip.id ? 0.6 : 1}">
               <span v-if="cardFontUploadingId === ip.id">上传中…</span>
-              <span v-else>{{ ip.font_ref_image_path ? '更新字体图' : '上传字体图' }}</span>
+              <span v-else>{{ (ip.font_ref_image_data || ip.hasFontImage) ? '更新字体图' : '上传字体图' }}</span>
               <input type="file" accept="image/*" style="display:none;" :disabled="cardFontUploadingId === ip.id" @change="e => handleCardFontImage(ip, e.target.files[0])" />
             </label>
 
@@ -382,10 +382,10 @@ function formatDate(dt) {
               </div>
               <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px;">
                 <div v-for="(img, i) in detailIp.images" :key="i"
-                  @click="previewImage = API_BASE + img.file_path"
+                  @click="previewImage = `${API_BASE}/api/knowledge/image/${img.id}`"
                   style="border-radius:8px;overflow:hidden;cursor:pointer;border:1px solid var(--line);aspect-ratio:1;"
                 >
-                  <img :src="API_BASE + img.file_path" loading="lazy"
+                  <img :src="`${API_BASE}/api/knowledge/image/${img.id}`" loading="lazy"
                     style="width:100%;height:100%;object-fit:cover;display:block;" />
                 </div>
               </div>
