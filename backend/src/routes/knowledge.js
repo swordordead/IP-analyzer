@@ -5,7 +5,7 @@ const fs = require('fs')
 const crypto = require('crypto')
 const mammoth = require('mammoth')
 const { db } = require('../services/db')
-const { parseDocument, generateEmbedding, buildEmbeddingText } = require('../services/gemini')
+const { parseDocument } = require('../services/gemini')
 
 const router = express.Router()
 
@@ -193,17 +193,6 @@ router.post('/save', async (req, res) => {
 
     await conn.commit()
     res.json({ success: true, ipId, message: `${ipName} 已成功入库` })
-
-    setImmediate(async () => {
-      try {
-        const text = buildEmbeddingText(ipName, elements, combos)
-        const vec = await generateEmbedding(text)
-        await db.query('UPDATE ip_profiles SET embeddings=? WHERE id=?', [JSON.stringify(vec), ipId])
-        console.log(`[Embedding] ${ipName} 向量已更新`)
-      } catch(e) {
-        console.warn('[Embedding] 生成失败:', e.message)
-      }
-    })
   } catch (err) {
     await conn.rollback()
     console.error('Save error:', err)

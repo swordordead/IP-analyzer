@@ -2,7 +2,7 @@ const express = require('express')
 const multer = require('multer')
 const path = require('path')
 const { db } = require('../services/db')
-const { analyzeProduct, identifyIP, generateEmbedding, cosineSimilarity } = require('../services/gemini')
+const { analyzeProduct, identifyIP } = require('../services/gemini')
 
 const router = express.Router()
 
@@ -61,46 +61,8 @@ router.post('/', upload.single('image'), async (req, res) => {
 
     let ipProfile = null
 
-    // 优先尝试向量检索
+    // 直接用 Gemini 名单匹配（跳过向量检索）
     try {
-      const [profilesWithVec] = await db.query(
-        'SELECT id, name, embeddings FROM ip_profiles WHERE embeddings IS NOT NULL'
-      )
-
-      if (profilesWithVec.length > 0) {
-        const queryVec = await generateEmbedding(description)
-        const ranked = profilesWithVec
-          .map(p => ({ ...p, score: cosineSimilarity(queryVec, JSON.parse(p.embeddings)) }))
-          .sort((a, b) => b.score - a.score)
-
-        const topMatch = ranked[0]?.score > 0.7 ? ranked[0] : null
-        console.log(`[向量检索] Top1: ${ranked[0]?.name} score=${ranked[0]?.score?.toFixed(3)}`)
-
-        if (topMatch) {
-          const [rows] = await db.query('SELECT * FROM ip_profiles WHERE id=?', [topMatch.id])
-          if (rows.length > 0) {
-            const profile = rows[0]
-            const [elements] = await db.query('SELECT * FROM ip_elements WHERE ip_id = ?', [profile.id])
-            const [combos] = await db.query('SELECT * FROM ip_combos WHERE ip_id = ?', [profile.id])
-            const [refImgs] = await db.query(
-              'SELECT image_data, media_type FROM ip_images WHERE ip_id=? AND image_data IS NOT NULL ORDER BY sort_order LIMIT 5',
-              [profile.id]
-            )
-            ipProfile = {
-              ...profile, elements, combos,
-              refImages: refImgs.map(r => ({ buffer: r.image_data, mediaType: r.media_type || 'image/jpeg' })),
-              fontRefImage: profile.font_ref_image_data ? { buffer: profile.font_ref_image_data, mediaType: profile.font_ref_media_type || 'image/jpeg' } : null
-            }
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[向量检索] 失败，降级到名单匹配:', e.message)
-    }
-
-    // 降级：向量检索未命中时，用旧的名单匹配
-    if (!ipProfile) {
-      try {
         const [profiles] = await db.query('SELECT id, name FROM ip_profiles ORDER BY updated_at DESC')
         const ipNames = profiles.map(p => p.name)
         if (ipNames.length > 0) {
@@ -129,7 +91,6 @@ router.post('/', upload.single('image'), async (req, res) => {
       } catch (e) {
         console.log('[名单匹配] 失败，使用通用框架:', e.message)
       }
-    }
 
     // 执行完整分析
     const result = await analyzeProduct({ imagePath, description, ipProfile })
