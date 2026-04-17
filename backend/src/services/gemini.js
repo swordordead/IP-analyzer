@@ -102,7 +102,8 @@ async function chatCompletion(messages) {
       model: MODEL,
       messages,
       temperature: 0.3
-    })
+    }),
+    signal: AbortSignal.timeout(120000)
   })
 
   if (!res.ok) {
